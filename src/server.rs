@@ -1,27 +1,35 @@
+use std::sync::{Arc, Mutex};
+
 use rmcp::{
-    ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router,
-    ErrorData as McpError,
+    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 
-use crate::claude::{ClaudeClient, SCAFFOLD_PROMPT, SYSTEM_PROMPT};
 use crate::tools::{ReviewFileParams, ScaffoldParams};
+use crate::{
+    claude::{ClaudeClient, SCAFFOLD_PROMPT, SYSTEM_PROMPT},
+    tools::{ListScaffoldsParams, SaveScaffoldParams},
+};
+use crate::{store::ScaffoldStore, tools::GetScaffoldParams};
 
 #[derive(Clone)]
 pub struct RustTutor {
     tool_router: ToolRouter<Self>,
+    store: Arc<Mutex<ScaffoldStore>>,
     claude: Option<ClaudeClient>,
 }
 
+const DEFAULT_LIST_LIMIT: i64 = 5;
+
 #[tool_router]
 impl RustTutor {
-    pub fn new(claude: Option<ClaudeClient>) -> Self {
-        Self {
+    pub fn new(claude: Option<ClaudeClient>) -> anyhow::Result<Self> {
+        Ok(Self {
             tool_router: Self::tool_router(),
+            store: Arc::new(Mutex::new(ScaffoldStore::open()?)),
             claude,
-        }
+        })
     }
 
     #[tool(
@@ -38,12 +46,9 @@ impl RustTutor {
 
         match &self.claude {
             Some(client) => {
-                let review = client
-                    .review(&contents)
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(format!("Claude API error: {e}"), None)
-                    })?;
+                let review = client.review(&contents).await.map_err(|e| {
+                    McpError::internal_error(format!("Claude API error: {e}"), None)
+                })?;
                 Ok(CallToolResult::success(vec![Content::text(review)]))
             }
             None => {
@@ -68,12 +73,21 @@ impl RustTutor {
     ) -> Result<CallToolResult, McpError> {
         match &self.claude {
             Some(client) => {
-                let plan = client
-                    .scaffold(&params.description)
-                    .await
+                let mut plan = client.scaffold(&params.description).await.map_err(|e| {
+                    McpError::internal_error(format!("Claude API error: {e}"), None)
+                })?;
+
+                let id = self
+                    .store
+                    .lock()
+                    .expect("store lock poisoned")
+                    .save(&params.description, &plan)
                     .map_err(|e| {
-                        McpError::internal_error(format!("Claude API error: {e}"), None)
+                        McpError::internal_error(format!("Failed to save scaffold: {e}"), None)
                     })?;
+
+                plan.push_str(&format!("\n\n**ID**: {id}"));
+
                 Ok(CallToolResult::success(vec![Content::text(plan)]))
             }
             None => {
@@ -84,6 +98,76 @@ impl RustTutor {
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
         }
+    }
+
+    #[tool(name = "save_scaffold", description = "Save a scaffold")]
+    async fn save_scaffold(
+        &self,
+        Parameters(params): Parameters<SaveScaffoldParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = {
+            let store = self.store.lock().expect("store lock poisoned");
+            store.save(&params.description, &params.content)
+        }
+        .map_err(|e| McpError::internal_error(format!("Failed to save scaffold: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Saved scaffold with ID {id}"
+        ))]))
+    }
+
+    #[tool(
+        name = "list_scaffolds",
+        description = "List scaffolds, if no query then list the most recent"
+    )]
+    async fn list_recent(
+        &self,
+        Parameters(params): Parameters<ListScaffoldsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let records = {
+            let store = self.store.lock().expect("store lock poisoned");
+            match params.query {
+                Some(q) => store.search(&q),
+                None => store.list_recent(params.limit.unwrap_or(DEFAULT_LIST_LIMIT)),
+            }
+            .map_err(|e| McpError::internal_error(format!("Failed to list scaffolds: {e}"), None))?
+        };
+
+        let text = if records.is_empty() {
+            "No scaffolds found".to_string()
+        } else {
+            records
+                .iter()
+                .map(|r| format!("**ID {}**: {}\n{}", r.id, r.description, r.content))
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(name = "get_scaffold", description = "Get a scaffold by ID")]
+    async fn get_scaffold(
+        &self,
+        Parameters(params): Parameters<GetScaffoldParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let record = {
+            let store = self.store.lock().expect("store lock poisoned");
+
+            store.get(params.id).map_err(|e| {
+                McpError::internal_error(format!("Failed to get scaffold: {e}"), None)
+            })?
+        };
+
+        let text = match record {
+            Some(r) => format!(
+                "**ID {}** ({}): {}\n{}",
+                r.id, r.created_at, r.description, r.content
+            ),
+            None => "No scaffold found".to_string(),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 }
 

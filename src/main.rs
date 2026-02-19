@@ -1,5 +1,6 @@
 mod claude;
 mod server;
+mod store;
 mod tools;
 
 use rmcp::{transport::stdio, ServiceExt};
@@ -28,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let tutor = RustTutor::new(claude);
+    let tutor = RustTutor::new(claude)?;
 
     tracing::info!("Starting Rust Tutor MCP server");
 

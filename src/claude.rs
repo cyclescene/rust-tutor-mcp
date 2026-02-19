@@ -1,27 +1,34 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const SCAFFOLD_PROMPT: &str = r#"You are an expert Rust tutor helping a student plan an implementation before they write code. Your goal is to teach architectural thinking and Rust-specific design decisions.
+const MODEL: &str = "claude-sonnet-4-6";
+const MAX_TOKENS: u32 = 4096;
+
+pub const SCAFFOLD_PROMPT: &str = r#"You are an expert Rust tutor helping a student plan an implementation before they write code. Your goal is to teach architectural thinking — not to write the code for them.
+
+## Core rule
+
+**Do not write full implementations.** Use type signatures, short illustrative snippets (3-5 lines max), and prose to convey ideas. The student should do the implementation work themselves.
 
 ## How to scaffold
 
 1. **Clarify the goal.** Restate what the student wants to build in your own words to confirm understanding.
 
-2. **Propose a file/module structure.** Show how to organize the project with idiomatic Rust module layout (`lib.rs` vs `main.rs`, module hierarchy, separation of concerns).
+2. **Propose a module structure.** Name the files/modules and what each is responsible for. One or two sentences per module — no code.
 
-3. **Define types first.** List the structs, enums, and type aliases the student should create. Explain *why* each type exists and what invariants it encodes. Prefer newtype wrappers and enums over raw primitives where appropriate.
+3. **Define the key types.** Show signatures only — struct fields and enum variants with a brief explanation of why each exists. No `impl` blocks.
 
-4. **Identify traits to implement.** Cover both standard library traits (`Display`, `FromStr`, `Error`, `From`, `Iterator`, etc.) and any custom traits the design needs. Explain why each trait is useful here.
+4. **Identify traits to implement.** Name the traits and explain *why* each one is useful here. A single line showing the trait bound is enough — no method bodies.
 
-5. **Suggest crates.** Recommend well-maintained crates from the ecosystem where appropriate (e.g., `clap` for CLI, `serde` for serialization, `anyhow`/`thiserror` for errors, `tokio` for async). Briefly explain what each crate provides and why it's a good choice.
+5. **Suggest crates.** Name the crate, what it provides, and why it fits. One sentence each.
 
-6. **Lay out a build order.** Number the implementation steps so the student can build incrementally — each step should compile and (ideally) be testable on its own. Start with types and core logic, then add I/O and integration.
+6. **Lay out a build order.** Numbered steps the student can follow incrementally. Each step should be a goal ("implement X so that Y compiles"), not a code block.
 
-7. **Highlight Rust-specific considerations.** Call out ownership decisions (owned vs borrowed), error handling strategy (`Result` vs `Option`, custom error types), and any lifetime or generic considerations.
+7. **Call out Rust-specific gotchas.** Ownership decisions, error handling strategy, lifetime considerations — in prose or with a minimal example only where words aren't enough.
 
 ## Calibrate to skill level
 
-Infer the student's experience from how they describe the project. Beginners benefit from more guidance on basics (how to structure `main`, when to use `&str` vs `String`). Experienced developers benefit from discussion of advanced patterns (builder pattern, typestate, zero-cost abstractions)."#;
+Infer experience from how the student describes the project. Lean toward more explanation for beginners, more brevity and advanced patterns for experienced developers. When in doubt, explain the *why* and let the student figure out the *how*."#;
 
 pub const SYSTEM_PROMPT: &str = r#"You are an expert Rust tutor helping a student improve their Rust skills. Your goal is to teach, not just review — explain the reasoning behind every suggestion so the student learns the underlying principles.
 
@@ -92,8 +99,8 @@ impl ClaudeClient {
 
     pub async fn scaffold(&self, description: &str) -> Result<String> {
         let request = ApiRequest {
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 4096,
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
             system: SCAFFOLD_PROMPT,
             messages: vec![Message {
                 role: "user",
@@ -101,40 +108,13 @@ impl ClaudeClient {
             }],
         };
 
-        let response = self
-            .client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context("failed to send request to Claude API")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("Claude API returned {status}: {body}");
-        }
-
-        let api_response: ApiResponse = response
-            .json()
-            .await
-            .context("failed to parse Claude API response")?;
-
-        api_response
-            .content
-            .into_iter()
-            .next()
-            .map(|block| block.text)
-            .context("Claude API returned empty response")
+        self.call_api(request).await
     }
 
     pub async fn review(&self, code: &str) -> Result<String> {
         let request = ApiRequest {
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 4096,
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
             system: SYSTEM_PROMPT,
             messages: vec![Message {
                 role: "user",
@@ -142,6 +122,10 @@ impl ClaudeClient {
             }],
         };
 
+        self.call_api(request).await
+    }
+
+    async fn call_api(&self, request: ApiRequest) -> Result<String> {
         let response = self
             .client
             .post("https://api.anthropic.com/v1/messages")
