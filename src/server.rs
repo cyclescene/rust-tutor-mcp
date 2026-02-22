@@ -6,17 +6,21 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 
-use crate::tools::{ReviewFileParams, ScaffoldParams};
 use crate::{
     claude::{ClaudeClient, SCAFFOLD_PROMPT, SYSTEM_PROMPT},
-    tools::{ListScaffoldsParams, SaveScaffoldParams},
+    store::{FileChangeRecord, SaveEventSummary, TutorStore},
+    tools::{
+        GetChangesByChangeIdParams, GetFileChangesParams, GetScaffoldParams,
+        ListRecentChangesParams, ListScaffoldsParams, ReviewFileParams, SaveScaffoldParams,
+        ScaffoldParams,
+    },
+    watcher::FileWatcher,
 };
-use crate::{store::ScaffoldStore, tools::GetScaffoldParams};
 
 #[derive(Clone)]
 pub struct RustTutor {
     tool_router: ToolRouter<Self>,
-    store: Arc<Mutex<ScaffoldStore>>,
+    store: Arc<Mutex<TutorStore>>,
     claude: Option<ClaudeClient>,
 }
 
@@ -25,9 +29,11 @@ const DEFAULT_LIST_LIMIT: i64 = 5;
 #[tool_router]
 impl RustTutor {
     pub fn new(claude: Option<ClaudeClient>) -> anyhow::Result<Self> {
+        let store = Arc::new(Mutex::new(TutorStore::open()?));
+        FileWatcher::spawn(Arc::clone(&store));
         Ok(Self {
             tool_router: Self::tool_router(),
-            store: Arc::new(Mutex::new(ScaffoldStore::open()?)),
+            store,
             claude,
         })
     }
@@ -81,7 +87,7 @@ impl RustTutor {
                     .store
                     .lock()
                     .expect("store lock poisoned")
-                    .save(&params.description, &plan)
+                    .save_scaffold(&params.description, &plan)
                     .map_err(|e| {
                         McpError::internal_error(format!("Failed to save scaffold: {e}"), None)
                     })?;
@@ -107,7 +113,7 @@ impl RustTutor {
     ) -> Result<CallToolResult, McpError> {
         let id = {
             let store = self.store.lock().expect("store lock poisoned");
-            store.save(&params.description, &params.content)
+            store.save_scaffold(&params.description, &params.content)
         }
         .map_err(|e| McpError::internal_error(format!("Failed to save scaffold: {e}"), None))?;
 
@@ -127,8 +133,8 @@ impl RustTutor {
         let records = {
             let store = self.store.lock().expect("store lock poisoned");
             match params.query {
-                Some(q) => store.search(&q),
-                None => store.list_recent(params.limit.unwrap_or(DEFAULT_LIST_LIMIT)),
+                Some(q) => store.search_scaffolds(&q),
+                None => store.list_recent_scaffolds(params.limit.unwrap_or(DEFAULT_LIST_LIMIT)),
             }
             .map_err(|e| McpError::internal_error(format!("Failed to list scaffolds: {e}"), None))?
         };
@@ -154,7 +160,7 @@ impl RustTutor {
         let record = {
             let store = self.store.lock().expect("store lock poisoned");
 
-            store.get(params.id).map_err(|e| {
+            store.get_scaffold_by_id(params.id).map_err(|e| {
                 McpError::internal_error(format!("Failed to get scaffold: {e}"), None)
             })?
         };
@@ -165,6 +171,99 @@ impl RustTutor {
                 r.id, r.created_at, r.description, r.content
             ),
             None => "No scaffold found".to_string(),
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "get_file_changes",
+        description = "Get a list of recent file changes"
+    )]
+    async fn get_file_changes(
+        &self,
+        Parameters(params): Parameters<GetFileChangesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let changes = {
+            let store = self.store.lock().expect("store lock poisoned");
+            store
+                .get_changes_for_file(
+                    &params.file_path,
+                    params.limit.unwrap_or(DEFAULT_LIST_LIMIT),
+                )
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to get file changes: {e}"), None)
+                })?
+        };
+
+        let text = if changes.is_empty() {
+            "No file changes found".to_string()
+        } else {
+            changes
+                .iter()
+                .map(FileChangeRecord::format_changes)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "list_recent_change_ids",
+        description = "List recent file changes, if no query then list the most recent"
+    )]
+    async fn list_recent_changes(
+        &self,
+        Parameters(params): Parameters<ListRecentChangesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let change_ids = {
+            let store = self.store.lock().expect("store lock poisoned");
+            store
+                .list_recent_change_ids(params.limit.unwrap_or(DEFAULT_LIST_LIMIT))
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to list file changes: {e}"), None)
+                })?
+        };
+
+        let text = if change_ids.is_empty() {
+            "No file changes found".to_string()
+        } else {
+            change_ids
+                .iter()
+                .map(SaveEventSummary::format_summary)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "get_changes_by_change_id",
+        description = "Get all file changes for a given change ID"
+    )]
+    async fn get_changes_by_change_id(
+        &self,
+        Parameters(params): Parameters<GetChangesByChangeIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let changes = {
+            let store = self.store.lock().expect("store lock poisoned");
+            store
+                .get_changes_for_change_id(&params.change_id)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to get file changes: {e}"), None)
+                })?
+        };
+
+        let text = if changes.is_empty() {
+            "No file changes found".to_string()
+        } else {
+            changes
+                .iter()
+                .map(FileChangeRecord::format_changes)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
         };
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
