@@ -2,6 +2,7 @@ mod claude;
 mod server;
 mod store;
 mod tools;
+mod watcher;
 
 use rmcp::{transport::stdio, ServiceExt};
 use tracing_subscriber::EnvFilter;
