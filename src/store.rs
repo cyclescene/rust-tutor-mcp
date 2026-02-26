@@ -127,6 +127,8 @@ impl TutorStore {
             .join("rust-tutor-mcp")
             .join(Self::detect_project_slug())
             .join("tutor.db");
+        // log to show where the tuttor db files live on the host
+        tracing::debug!(path = %path.display(), "tutor db location");
         Self::open_at(&path)
     }
 
@@ -217,24 +219,23 @@ impl TutorStore {
 
     // save - this creates a new scaffold record
     pub fn save_scaffold(&self, description: &str, content: &str) -> Result<i64> {
-        let binding = self.conn.lock().expect("store lock poisoned");
+        let conn = self.conn.lock().expect("store lock poisoned");
 
-        binding
-            .execute(
-                r##"
+        conn.execute(
+            r##"
                 INSERT INTO scaffolds (description, content, created_at)
                 VALUES (?1, ?2, ?3)
             "##,
-                params![description, content, Utc::now()],
-            )
-            .context("failed to save scaffold")?;
+            params![description, content, Utc::now()],
+        )
+        .context("failed to save scaffold")?;
 
-        Ok(binding.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
     // search - this searches for scaffolds that match the query
     pub fn search_scaffolds(&self, query: &str) -> Result<Vec<ScaffoldRecord>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
-        let mut stmt = binding
+        let conn = self.conn.lock().expect("store lock poisoned");
+        let mut stmt = conn
             .prepare(
                 r##"
            SELECT id, description, content, created_at
@@ -252,8 +253,8 @@ impl TutorStore {
 
     // get - this gets a single scaffold by id
     pub fn get_scaffold_by_id(&self, id: i64) -> Result<Option<ScaffoldRecord>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
-        let mut stmt = binding
+        let conn = self.conn.lock().expect("store lock poisoned");
+        let mut stmt = conn
             .prepare(
                 r##"
             SELECT id, description, content, created_at
@@ -263,25 +264,18 @@ impl TutorStore {
             )
             .context("failed to prepare get query")?;
 
-        match stmt.query_row(params![id], |row| {
-            Ok(ScaffoldRecord {
-                id: row.get(0)?,
-                description: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        }) {
-            Ok(row) => Ok(Some(row)),
+        match stmt.query_row(params![id], ScaffoldRecord::from_row) {
+            Ok(record) => Ok(Some(record)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e).context("failed to get scaffold"),
+            Err(e) => Err(e).context("failed to return scaffold"),
         }
     }
 
     // list_recent - this lists the most recent scaffolds
     pub fn list_recent_scaffolds(&self, limit: i64) -> Result<Vec<ScaffoldRecord>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
+        let conn = self.conn.lock().expect("store lock poisoned");
 
-        let mut stmt = binding
+        let mut stmt = conn
             .prepare(
                 r##"
                 SELECT id, description, content, created_at
@@ -299,9 +293,9 @@ impl TutorStore {
 
     // save_file_change - this creates a new file change record
     pub fn save_file_change(&self, file_change: &FileChangeRecord) -> Result<i64> {
-        let binding = self.conn.lock().expect("store lock poisoned");
+        let conn = self.conn.lock().expect("store lock poisoned");
 
-        binding
+        conn
             .execute(r##"
             INSERT INTO file_changes (file_path, hunk_idx, change_id, old_start, old_count, new_start, new_count, before_lines, after_lines, changed_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -320,7 +314,7 @@ impl TutorStore {
             ])
             .context("failed to save file change")?;
 
-        Ok(binding.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn get_changes_for_file(
@@ -328,8 +322,8 @@ impl TutorStore {
         file_path: &str,
         limit: i64,
     ) -> Result<Vec<FileChangeRecord>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
-        let mut stmt = binding
+        let conn = self.conn.lock().expect("store lock poisoned");
+        let mut stmt = conn
             .prepare(
                 r##"
             SELECT id, file_path, hunk_idx, change_id, old_start, old_count, new_start, new_count, before_lines, after_lines, changed_at
@@ -346,9 +340,9 @@ impl TutorStore {
     }
 
     pub fn list_recent_change_ids(&self, limit: i64) -> Result<Vec<SaveEventSummary>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
+        let conn = self.conn.lock().expect("store lock poisoned");
 
-        let mut stmt = binding
+        let mut stmt = conn
             .prepare(
                 r##"
                     SELECT change_id, file_path, changed_at, COUNT(*) as hunk_count
@@ -364,8 +358,8 @@ impl TutorStore {
     }
 
     pub fn get_changes_for_change_id(&self, change_id: &str) -> Result<Vec<FileChangeRecord>> {
-        let binding = self.conn.lock().expect("store lock poisoned");
-        let mut stmt = binding
+        let conn = self.conn.lock().expect("store lock poisoned");
+        let mut stmt = conn
             .prepare(
                r##"
                SELECT id, file_path, hunk_idx, change_id, old_start, old_count, new_start, new_count, before_lines, after_lines, changed_at

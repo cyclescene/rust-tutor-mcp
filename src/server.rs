@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -8,9 +11,10 @@ use rmcp::{
 
 use crate::{
     claude::{ClaudeClient, SCAFFOLD_PROMPT, SYSTEM_PROMPT},
+    docs_rs::fetch_docs,
     store::{FileChangeRecord, SaveEventSummary, TutorStore},
     tools::{
-        GetChangesByChangeIdParams, GetFileChangesParams, GetScaffoldParams,
+        CheckCrateDocsParams, GetChangesByChangeIdParams, GetFileChangesParams, GetScaffoldParams,
         ListRecentChangesParams, ListScaffoldsParams, ReviewFileParams, SaveScaffoldParams,
         ScaffoldParams,
     },
@@ -22,6 +26,7 @@ pub struct RustTutor {
     tool_router: ToolRouter<Self>,
     store: Arc<Mutex<TutorStore>>,
     claude: Option<ClaudeClient>,
+    client: reqwest::Client,
 }
 
 const DEFAULT_LIST_LIMIT: i64 = 5;
@@ -30,11 +35,16 @@ const DEFAULT_LIST_LIMIT: i64 = 5;
 impl RustTutor {
     pub fn new(claude: Option<ClaudeClient>) -> anyhow::Result<Self> {
         let store = Arc::new(Mutex::new(TutorStore::open()?));
+
         FileWatcher::spawn(Arc::clone(&store));
         Ok(Self {
             tool_router: Self::tool_router(),
             store,
             claude,
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("Rust Tutor MCP")
+                .build()?,
         })
     }
 
@@ -264,6 +274,40 @@ impl RustTutor {
                 .map(FileChangeRecord::format_changes)
                 .collect::<Vec<_>>()
                 .join("\n\n---\n\n")
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "check_crate_docs",
+        description = "check docs.rs for information on types and"
+    )]
+    async fn check_crate_docs(
+        &self,
+        Parameters(params): Parameters<CheckCrateDocsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // check the version fallback to latest
+        let results = fetch_docs(
+            &self.client,
+            &params.crate_name,
+            &params.type_name,
+            &params.version.unwrap_or_else(|| "latest".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let text = if results.is_empty() {
+            "No Results found".to_string()
+        } else {
+            format!(
+                "Results:\n\n{}",
+                results
+                    .iter()
+                    .map(|r| format!("{:?}\n\n", r))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         };
 
         Ok(CallToolResult::success(vec![Content::text(text)]))

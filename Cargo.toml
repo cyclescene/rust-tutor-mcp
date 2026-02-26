@@ -13,10 +13,11 @@ schemars = "1.0"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rusqlite = {version = "0.32", features = ["bundled", "chrono"]}
-chrono = {version = "0.4", features = ["serde"]}
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
-uuid = {version = "1", features = ["v4"]}
+uuid = { version = "1", features = ["v4"] }
 similar = "2.2"
 notify-debouncer-mini = "0.6.0"
 walkdir = "2.3"
+scraper = "0.25.0"
