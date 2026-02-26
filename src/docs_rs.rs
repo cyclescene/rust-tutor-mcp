@@ -33,7 +33,7 @@ pub async fn fetch_docs(
         .filter_map(|item| {
             let name = item.inner_html();
             if name.to_lowercase().contains(&type_name.to_lowercase()) {
-                let href = format!("{}/{}", base, item.attr("href")?.to_string());
+                let href = format!("{}/{}", base, item.attr("href")?);
                 Some((name, href))
             } else {
                 None

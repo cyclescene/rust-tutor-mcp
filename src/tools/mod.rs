@@ -1,6 +1,7 @@
 mod check_crate_docs;
 mod get_changes_by_change_id;
 mod get_file_changes;
+mod get_man_page;
 mod get_scaffold;
 mod list_recent_change_ids;
 mod list_scaffolds;
@@ -11,6 +12,7 @@ mod scaffold;
 pub use check_crate_docs::CheckCrateDocsParams;
 pub use get_changes_by_change_id::GetChangesByChangeIdParams;
 pub use get_file_changes::GetFileChangesParams;
+pub use get_man_page::GetManPageParams;
 pub use get_scaffold::GetScaffoldParams;
 pub use list_recent_change_ids::ListRecentChangesParams;
 pub use list_scaffolds::ListScaffoldsParams;

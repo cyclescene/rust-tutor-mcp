@@ -12,11 +12,12 @@ use rmcp::{
 use crate::{
     claude::{ClaudeClient, SCAFFOLD_PROMPT, SYSTEM_PROMPT},
     docs_rs::fetch_docs,
-    store::{FileChangeRecord, SaveEventSummary, TutorStore},
+    man,
+    store::{FileChangeRecord, SaveEventSummary, ScaffoldRecord, TutorStore},
     tools::{
-        CheckCrateDocsParams, GetChangesByChangeIdParams, GetFileChangesParams, GetScaffoldParams,
-        ListRecentChangesParams, ListScaffoldsParams, ReviewFileParams, SaveScaffoldParams,
-        ScaffoldParams,
+        CheckCrateDocsParams, GetChangesByChangeIdParams, GetFileChangesParams, GetManPageParams,
+        GetScaffoldParams, ListRecentChangesParams, ListScaffoldsParams, ReviewFileParams,
+        SaveScaffoldParams, ScaffoldParams,
     },
     watcher::FileWatcher,
 };
@@ -50,7 +51,8 @@ impl RustTutor {
 
     #[tool(
         name = "review_file",
-        description = "Review a Rust source file for idiomatic patterns and common mistakes"
+        description = "Review a Rust source file for idiomatic patterns and common mistakes",
+        annotations(title = "Review File")
     )]
     async fn review_file(
         &self,
@@ -81,7 +83,8 @@ impl RustTutor {
 
     #[tool(
         name = "scaffold",
-        description = "Given a description of what you want to build in Rust, returns a step-by-step implementation plan with types, traits, crates, and build order"
+        description = "Given a description of what you want to build in Rust, returns a step-by-step implementation plan with types, traits, crates, and build order",
+        annotations(title = "Scaffold")
     )]
     async fn scaffold(
         &self,
@@ -116,7 +119,11 @@ impl RustTutor {
         }
     }
 
-    #[tool(name = "save_scaffold", description = "Save a scaffold")]
+    #[tool(
+        name = "save_scaffold",
+        description = "Save a scaffold",
+        annotations(title = "Save Scaffold")
+    )]
     async fn save_scaffold(
         &self,
         Parameters(params): Parameters<SaveScaffoldParams>,
@@ -134,9 +141,10 @@ impl RustTutor {
 
     #[tool(
         name = "list_scaffolds",
-        description = "List scaffolds, if no query then list the most recent"
+        description = "List scaffolds, if no query then list the most recent",
+        annotations(title = "List Scaffolds")
     )]
-    async fn list_recent(
+    async fn list_scaffolds(
         &self,
         Parameters(params): Parameters<ListScaffoldsParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -149,20 +157,20 @@ impl RustTutor {
             .map_err(|e| McpError::internal_error(format!("Failed to list scaffolds: {e}"), None))?
         };
 
-        let text = if records.is_empty() {
-            "No scaffolds found".to_string()
-        } else {
-            records
-                .iter()
-                .map(|r| format!("**ID {}**: {}\n{}", r.id, r.description, r.content))
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n")
-        };
+        let text = join_or_empty(
+            &records,
+            "No scaffolds found",
+            ScaffoldRecord::format_changes,
+        );
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    #[tool(name = "get_scaffold", description = "Get a scaffold by ID")]
+    #[tool(
+        name = "get_scaffold",
+        description = "Get a scaffold by ID",
+        annotations(title = "Get Scaffold")
+    )]
     async fn get_scaffold(
         &self,
         Parameters(params): Parameters<GetScaffoldParams>,
@@ -188,7 +196,8 @@ impl RustTutor {
 
     #[tool(
         name = "get_file_changes",
-        description = "Get a list of recent file changes"
+        description = "Get a list of recent file changes",
+        annotations(title = "Get File Changes")
     )]
     async fn get_file_changes(
         &self,
@@ -206,22 +215,19 @@ impl RustTutor {
                 })?
         };
 
-        let text = if changes.is_empty() {
-            "No file changes found".to_string()
-        } else {
-            changes
-                .iter()
-                .map(FileChangeRecord::format_changes)
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n")
-        };
+        let text = join_or_empty(
+            &changes,
+            "No file changes found",
+            FileChangeRecord::format_changes,
+        );
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
         name = "list_recent_change_ids",
-        description = "List recent file changes, if no query then list the most recent"
+        description = "List recent file changes, if no query then list the most recent",
+        annotations(title = "List Recent Change IDs")
     )]
     async fn list_recent_changes(
         &self,
@@ -236,22 +242,19 @@ impl RustTutor {
                 })?
         };
 
-        let text = if change_ids.is_empty() {
-            "No file changes found".to_string()
-        } else {
-            change_ids
-                .iter()
-                .map(SaveEventSummary::format_summary)
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n")
-        };
+        let text = join_or_empty(
+            &change_ids,
+            "No file changes found",
+            SaveEventSummary::format_summary,
+        );
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
         name = "get_changes_by_change_id",
-        description = "Get all file changes for a given change ID"
+        description = "Get all file changes for a given change ID",
+        annotations(title = "Get Changes By Change Id")
     )]
     async fn get_changes_by_change_id(
         &self,
@@ -266,51 +269,76 @@ impl RustTutor {
                 })?
         };
 
-        let text = if changes.is_empty() {
-            "No file changes found".to_string()
-        } else {
-            changes
-                .iter()
-                .map(FileChangeRecord::format_changes)
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n")
-        };
+        let text = join_or_empty(
+            &changes,
+            "No file changes found",
+            FileChangeRecord::format_changes,
+        );
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
         name = "check_crate_docs",
-        description = "check docs.rs for information on types and"
+        description = "check docs.rs for information on types",
+        annotations(title = "Check Crate Docs", read_only_hint = true,)
     )]
     async fn check_crate_docs(
         &self,
         Parameters(params): Parameters<CheckCrateDocsParams>,
     ) -> Result<CallToolResult, McpError> {
         // check the version fallback to latest
+
+        let version = params.version.unwrap_or_else(|| String::from("latest"));
+
         let results = fetch_docs(
             &self.client,
             &params.crate_name,
             &params.type_name,
-            &params.version.unwrap_or_else(|| "latest".to_string()),
+            &version,
         )
         .await
-        .unwrap();
+        .map_err(|e| {
+            tracing::error!(
+                "failed to get docs: reason - {} crate_name - {} type_name - {} version -{}",
+                e,
+                &params.crate_name,
+                &params.type_name,
+                version
+            );
+            McpError::internal_error(format!("failed to fetch docs: {e}"), None)
+        })?;
 
         let text = if results.is_empty() {
             "No Results found".to_string()
         } else {
             format!(
-                "Results:\n\n{}",
+                "**Results**:\n\n{}",
                 results
                     .iter()
                     .map(|r| format!("{:?}\n\n", r))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n---\n")
             )
         };
 
         Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "get_man_page",
+        description = "get a man page for the inputted command",
+        annotations(title = "Get Man Page", read_only_hint = true,)
+    )]
+    async fn get_man_page(
+        &self,
+        Parameters(params): Parameters<GetManPageParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let man_page = man::query_man_page(&params.command).map_err(|e| {
+            McpError::internal_error(format!("failed to fetch man page: {e}"), None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(man_page)]))
     }
 }
 
@@ -322,5 +350,13 @@ impl ServerHandler for RustTutor {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
+    }
+}
+
+fn join_or_empty<T>(items: &[T], msg: &str, f: impl Fn(&T) -> String) -> String {
+    if items.is_empty() {
+        msg.to_string()
+    } else {
+        items.iter().map(f).collect::<Vec<_>>().join("\n\n---\n\n")
     }
 }

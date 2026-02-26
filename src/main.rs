@@ -1,5 +1,6 @@
 mod claude;
 mod docs_rs;
+mod man;
 mod server;
 mod store;
 mod tools;

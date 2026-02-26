@@ -20,6 +20,15 @@ pub struct ScaffoldRecord {
     pub created_at: DateTime<Utc>,
 }
 
+impl ScaffoldRecord {
+    pub fn format_changes(&self) -> String {
+        format!(
+            "**ID {}**: {}\n{}",
+            &self.id, &self.description, &self.content
+        )
+    }
+}
+
 impl FromRow for ScaffoldRecord {
     fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         Ok(Self {
